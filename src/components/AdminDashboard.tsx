@@ -22,7 +22,15 @@ import {
   Mail,
   Sparkles,
   UserCheck,
-  X
+  X,
+  PackageCheck,
+  Tag,
+  Layers,
+  LayoutList,
+  CalendarDays,
+  LogOut,
+  ExternalLink,
+  Info
 } from 'lucide-react';
 import { Appointment, Barber, Service } from '../types.ts';
 import { getTodayFormatted, TIME_SLOTS } from '../data/initialData.ts';
@@ -37,6 +45,8 @@ interface AdminDashboardProps {
   onAddManualAppointment: (appointment: Omit<Appointment, 'id' | 'createdAt'>) => Promise<Appointment>;
   onRefresh: () => void;
   isSupabaseConnected: boolean;
+  onLogoutAdm?: () => void;
+  onOpenClientView?: () => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -49,6 +59,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onAddManualAppointment,
   onRefresh,
   isSupabaseConnected,
+  onLogoutAdm,
+  onOpenClientView,
 }) => {
   const todayDate = getTodayFormatted();
 
@@ -72,8 +84,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [barberFilter, setBarberFilter] = useState<string>(() => {
     return activeAdminBarberId !== 'all' ? activeAdminBarberId : 'all';
   });
+  const [serviceFilter, setServiceFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // View Mode: 'list' (detailed cards) or 'timeline' (daily hour-by-hour agenda)
+  const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
 
   // Quick manual appointment modal
   const [showManualModal, setShowManualModal] = useState<boolean>(false);
@@ -85,7 +101,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     activeAdminBarber?.id || barbers[0]?.id || ''
   );
   const [manualDate, setManualDate] = useState<string>(todayDate);
-  const [manualTime, setManualTime] = useState<string>('10:00');
+  const [manualTime, setManualTime] = useState<string>('10:30');
   const [manualNotes, setManualNotes] = useState<string>('');
   const [isSubmittingManual, setIsSubmittingManual] = useState<boolean>(false);
 
@@ -193,30 +209,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         return false;
       }
 
+      // Service filter ("O que agendou")
+      if (serviceFilter !== 'all' && apt.serviceId !== serviceFilter) {
+        return false;
+      }
+
       // Status filter
       if (statusFilter !== 'all' && apt.status !== statusFilter) {
         return false;
       }
 
-      // Search query
+      // Search query (name, phone, service name, notes)
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchName = apt.clientName.toLowerCase().includes(q);
         const matchPhone = apt.clientPhone.includes(q);
         const matchService = apt.serviceName.toLowerCase().includes(q);
-        if (!matchName && !matchPhone && !matchService) return false;
+        const matchNotes = apt.notes?.toLowerCase().includes(q) || false;
+        if (!matchName && !matchPhone && !matchService && !matchNotes) return false;
       }
 
       return true;
     });
-  }, [appointments, dateFilter, barberFilter, statusFilter, searchQuery, todayDate]);
+  }, [appointments, dateFilter, barberFilter, serviceFilter, statusFilter, searchQuery, todayDate]);
 
-  // Key Metrics
+  // Breakdown of "O que estão agendando" (Services demanded in current filtered view)
+  const servicesDemandStats = useMemo(() => {
+    const map: Record<string, { serviceName: string; count: number; totalRevenue: number; serviceId: string }> = {};
+
+    filteredAppointments.forEach((apt) => {
+      if (apt.status === 'cancelled') return;
+      if (!map[apt.serviceId]) {
+        map[apt.serviceId] = {
+          serviceId: apt.serviceId,
+          serviceName: apt.serviceName,
+          count: 0,
+          totalRevenue: 0,
+        };
+      }
+      map[apt.serviceId].count += 1;
+      map[apt.serviceId].totalRevenue += apt.servicePrice;
+    });
+
+    return Object.values(map).sort((a, b) => b.count - a.count);
+  }, [filteredAppointments]);
+
+  // Metrics
   const todayAppointments = useMemo(() => {
     return appointments.filter((apt) => apt.date === todayDate && apt.status !== 'cancelled');
   }, [appointments, todayDate]);
 
-  // My chair metrics (if a specific admin barber is selected)
   const myTodayAppointments = useMemo(() => {
     if (!activeAdminBarber) return todayAppointments;
     return todayAppointments.filter((apt) => apt.barberId === activeAdminBarber.id);
@@ -243,7 +285,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
   };
 
-  // WhatsApp reminder message
+  // WhatsApp reminder message with explicit service booked
   const handleOpenWhatsAppReminder = (apt: Appointment) => {
     const rawPhone = apt.clientPhone.replace(/\D/g, '');
     const cleanPhone = rawPhone.length === 11 ? `55${rawPhone}` : rawPhone;
@@ -251,13 +293,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const formattedDate = `${d}/${m}/${y}`;
     
     const message = `Olá, ${apt.clientName}! Passando para confirmar seu agendamento na *Navalha & Arte Barbearia*:%0A%0A` +
-      `✂️ *Serviço:* ${apt.serviceName}%0A` +
-      `💈 *Barbeiro:* ${apt.barberName}%0A` +
+      `✂️ *Serviço Agendado:* ${apt.serviceName}%0A` +
+      `💈 *Barbeiro Responsável:* ${apt.barberName}%0A` +
       `📅 *Data e Horário:* ${formattedDate} às ${apt.time}h%0A` +
+      `⏱️ *Duração Estimada:* ${apt.serviceDuration} min%0A` +
       `💵 *Valor:* ${formatBRL(apt.servicePrice)}%0A%0A` +
-      `Se precisar ajustar horário ou tiver qualquer dúvida, nos avise por aqui. Te esperamos!`;
+      (apt.notes ? `📝 *Observação:* ${apt.notes}%0A%0A` : '') +
+      `Se precisar ajustar ou tiver qualquer dúvida, nos avise por aqui. Te esperamos!`;
 
     window.open(`https://wa.me/${cleanPhone}?text=${message}`, '_blank');
+  };
+
+  // Open manual appointment modal with a preselected time if desired
+  const handleOpenManualForTime = (timeSlot?: string) => {
+    if (timeSlot) setManualTime(timeSlot);
+    setShowManualModal(true);
   };
 
   // Manual appointment submit
@@ -299,9 +349,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-8">
+    <div className="max-w-7xl mx-auto py-6 sm:py-8 px-4 sm:px-6 lg:px-8 space-y-7">
       
-      {/* ================= BARBER ADMIN IDENTITY BANNER ================= */}
+      {/* ================= BARBER ADMIN TOP BANNER & IDENTITY ================= */}
       <div className="bg-gradient-to-r from-zinc-900 via-zinc-900 to-zinc-950 border border-amber-500/30 rounded-3xl p-5 sm:p-6 shadow-xl shadow-amber-500/5">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
           
@@ -324,7 +374,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider flex items-center gap-1">
-                  <Scissors className="w-3 h-3" /> Barbeiro Administrador
+                  <Scissors className="w-3 h-3" /> Modo Barbeiro ADM
                 </span>
                 <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
                   isSupabaseConnected
@@ -340,15 +390,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </h1>
               <p className="text-xs text-zinc-400">
                 {activeAdminBarber
-                  ? `Especialista: ${activeAdminBarber.specialty} • Gestão de clientes e edição de horários ativa`
-                  : 'Visão unificada de todos os barbeiros, clientes e faturamento da casa'}
+                  ? `Cadeira ativa • Especialidade: ${activeAdminBarber.specialty}`
+                  : 'Visão consolidada de todas as cadeiras, clientes e serviços solicitados'}
               </p>
             </div>
           </div>
 
           {/* Quick Barber Selector & Action Buttons */}
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-2 bg-zinc-950/80 border border-zinc-800 px-3 py-1.5 rounded-2xl">
+            <div className="flex items-center gap-2 bg-zinc-950/90 border border-zinc-800 px-3 py-1.5 rounded-2xl">
               <span className="text-xs text-zinc-400 flex items-center gap-1">
                 <UserCheck className="w-3.5 h-3.5 text-amber-400" />
                 Sou:
@@ -384,18 +434,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <button
               id="open-manual-booking-btn"
               type="button"
-              onClick={() => setShowManualModal(true)}
+              onClick={() => handleOpenManualForTime()}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4 stroke-[2.5]" />
               <span>Novo Agendamento</span>
             </button>
+
+            {onLogoutAdm && (
+              <button
+                id="logout-adm-btn"
+                type="button"
+                onClick={onLogoutAdm}
+                title="Bloquear painel e exigir identificação do ADM"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-900/80 hover:bg-red-950/50 hover:text-red-300 hover:border-red-900/40 text-zinc-400 text-xs font-medium transition-all cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Bloquear ADM</span>
+              </button>
+            )}
           </div>
 
         </div>
       </div>
 
-      {/* ================= METRIC CARDS GRID ================= */}
+      {/* ================= METRIC CARDS ================= */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
         {/* Metric 1 */}
@@ -457,7 +520,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="bg-zinc-900/80 border border-zinc-800 p-5 rounded-2xl">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-              Total Geral
+              Total Agendamentos
             </span>
             <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center">
               <TrendingUp className="w-4 h-4" />
@@ -467,17 +530,94 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span className="text-3xl font-bold font-mono text-zinc-100">
               {appointments.length}
             </span>
-            <span className="text-xs text-zinc-400">agendamentos salvos</span>
+            <span className="text-xs text-zinc-400">no sistema</span>
           </div>
         </div>
 
       </div>
 
+      {/* ================= HERO: "O QUE OS CLIENTES ESTÃO AGENDANDO" (DEMAND SUMMARY) ================= */}
+      <div className="bg-gradient-to-b from-zinc-900 to-zinc-900/70 border border-amber-500/30 rounded-3xl p-5 sm:p-6 space-y-4 shadow-lg shadow-amber-500/5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-zinc-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center shadow">
+              <PackageCheck className="w-5 h-5 stroke-[2.2]" />
+            </div>
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-zinc-100 flex items-center gap-2">
+                <span>O Que Estão Agendando</span>
+                <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  {filteredAppointments.length} agendamento(s)
+                </span>
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Resumo dos serviços mais solicitados pelos clientes no filtro selecionado:
+              </p>
+            </div>
+          </div>
+
+          {/* Service quick filter toggle */}
+          {serviceFilter !== 'all' && (
+            <button
+              type="button"
+              onClick={() => setServiceFilter('all')}
+              className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 font-semibold self-start sm:self-auto cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              Limpar filtro de serviço
+            </button>
+          )}
+        </div>
+
+        {/* Demand tags / pills */}
+        {servicesDemandStats.length === 0 ? (
+          <p className="text-xs text-zinc-500 italic py-2">
+            Nenhum serviço confirmado ou pendente para os filtros ativos.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {servicesDemandStats.map((item) => {
+              const isSelected = serviceFilter === item.serviceId;
+              return (
+                <button
+                  key={item.serviceId}
+                  type="button"
+                  onClick={() => setServiceFilter(isSelected ? 'all' : item.serviceId)}
+                  className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                    isSelected
+                      ? 'bg-amber-500/20 border-amber-500 ring-1 ring-amber-500 text-zinc-100 shadow-md'
+                      : 'bg-zinc-950/70 border-zinc-800/90 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-950'
+                  }`}
+                >
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="text-xs font-bold truncate flex items-center gap-1.5">
+                      <Scissors className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                      <span className="truncate">{item.serviceName}</span>
+                    </div>
+                    <div className="text-[11px] text-zinc-400">
+                      Total: <strong className="text-amber-400">{formatBRL(item.totalRevenue)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <span className="text-xs font-bold font-mono px-2.5 py-1 rounded-xl bg-amber-500 text-zinc-950">
+                      {item.count} {item.count === 1 ? 'cliente' : 'clientes'}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* ================= FILTER AND SEARCH BAR ================= */}
-      <div className="bg-zinc-900/90 border border-zinc-800 p-4 rounded-2xl space-y-3">
+      <div className="bg-zinc-900/90 border border-zinc-800 p-4 sm:p-5 rounded-2xl space-y-4">
         
-        {/* Date Tabs */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800/80 pb-3">
+        {/* Date Tabs & View Mode Switcher */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 pb-3.5">
+          
+          {/* Period selector */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-zinc-400 mr-1 flex items-center gap-1">
               <Filter className="w-3.5 h-3.5" /> Período:
@@ -494,7 +634,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onClick={() => setDateFilter(tab.id as any)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                   dateFilter === tab.id
-                    ? 'bg-amber-500 text-zinc-950 shadow-sm'
+                    ? 'bg-amber-500 text-zinc-950 shadow-sm font-bold'
                     : 'bg-zinc-800/80 text-zinc-300 hover:bg-zinc-800'
                 }`}
               >
@@ -503,27 +643,61 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             ))}
           </div>
 
-          {/* Quick toggle for "My Chair" */}
-          {activeAdminBarber && (
-            <button
-              type="button"
-              onClick={() =>
-                setBarberFilter(barberFilter === activeAdminBarber.id ? 'all' : activeAdminBarber.id)
-              }
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                barberFilter === activeAdminBarber.id
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                  : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-transparent'
-              }`}
-            >
-              <Scissors className="w-3 h-3" />
-              <span>{barberFilter === activeAdminBarber.id ? 'Filtrando: Minha Cadeira' : 'Ver Só Minha Cadeira'}</span>
-            </button>
-          )}
+          {/* Right controls: "Minha Cadeira" toggle and View Mode (Cards vs Timeline) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {activeAdminBarber && (
+              <button
+                type="button"
+                onClick={() =>
+                  setBarberFilter(barberFilter === activeAdminBarber.id ? 'all' : activeAdminBarber.id)
+                }
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  barberFilter === activeAdminBarber.id
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-transparent'
+                }`}
+              >
+                <Scissors className="w-3 h-3" />
+                <span>{barberFilter === activeAdminBarber.id ? 'Filtrando: Minha Cadeira' : 'Ver Só Minha Cadeira'}</span>
+              </button>
+            )}
+
+            {/* View Mode Toggle: Detailed Cards vs Timeline Agenda */}
+            <div className="flex items-center bg-zinc-950 p-1 rounded-xl border border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                title="Visualização Detalhada em Cartões"
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  viewMode === 'list'
+                    ? 'bg-amber-500 text-zinc-950 shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <LayoutList className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Cartões</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewMode('timeline')}
+                title="Visualização em Grade de Horários do Dia"
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  viewMode === 'timeline'
+                    ? 'bg-amber-500 text-zinc-950 shadow-sm'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <CalendarDays className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Grade de Horários</span>
+              </button>
+            </div>
+          </div>
+
         </div>
 
         {/* Dropdowns & Search */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           
           {/* Search */}
           <div className="relative">
@@ -531,11 +705,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <input
               id="search-appointments-input"
               type="text"
-              placeholder="Buscar por cliente, telefone ou serviço..."
+              placeholder="Buscar cliente, telefone, serviço..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 focus:outline-none focus:border-amber-500 placeholder:text-zinc-600"
+              className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 focus:outline-none focus:border-amber-500 placeholder:text-zinc-600"
             />
+          </div>
+
+          {/* Service Filter ("O que agendou") */}
+          <div>
+            <select
+              id="filter-service-select"
+              value={serviceFilter}
+              onChange={(e) => setServiceFilter(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+            >
+              <option value="all">✂️ O Que Agendou: Todos os Serviços</option>
+              {services.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({formatBRL(s.price)})
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Barber Dropdown Filter */}
@@ -544,9 +735,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               id="filter-barber-select"
               value={barberFilter}
               onChange={(e) => setBarberFilter(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+              className="w-full px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 focus:outline-none focus:border-amber-500 cursor-pointer"
             >
-              <option value="all">Barbeiro: Todos os Barbeiros</option>
+              <option value="all">💈 Barbeiro: Todos os Barbeiros</option>
               {barbers.map((b) => (
                 <option key={b.id} value={b.id}>
                   Barbeiro: {b.name} {b.id === activeAdminBarberId ? '(Você)' : ''}
@@ -561,12 +752,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               id="filter-status-select"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+              className="w-full px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 focus:outline-none focus:border-amber-500 cursor-pointer"
             >
-              <option value="all">Status: Todos</option>
-              <option value="confirmed">Status: Confirmados</option>
-              <option value="completed">Status: Concluídos</option>
-              <option value="cancelled">Status: Cancelados</option>
+              <option value="all">📌 Status: Todos os Status</option>
+              <option value="confirmed">Confirmados (Agendados)</option>
+              <option value="completed">Concluídos (Atendidos)</option>
+              <option value="cancelled">Cancelados</option>
             </select>
           </div>
 
@@ -574,222 +765,418 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       </div>
 
-      {/* ================= APPOINTMENTS LIST ================= */}
+      {/* ================= APPOINTMENTS DISPLAY ================= */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-bold text-zinc-200 flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-amber-400" />
-            <span>Lista de Clientes Agendados ({filteredAppointments.length})</span>
+        
+        {/* Section Title */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <h2 className="text-base sm:text-lg font-bold text-zinc-100 flex items-center gap-2">
+            <User className="w-5 h-5 text-amber-400" />
+            <span>Clientes Agendados & Serviços Solicitados ({filteredAppointments.length})</span>
           </h2>
           <span className="text-xs text-zinc-400">
-            Dica: Clique em <strong className="text-amber-400 font-semibold">Editar</strong> para alterar nome, telefone, horário ou barbeiro
+            Dica: Clique em <strong className="text-amber-400">Editar</strong> para alterar horário, serviço, barbeiro ou cliente
           </span>
         </div>
 
+        {/* Empty State */}
         {filteredAppointments.length === 0 ? (
-          <div className="p-12 text-center bg-zinc-900/40 rounded-2xl border border-zinc-800/80 space-y-3">
-            <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center mx-auto text-zinc-500">
-              <Calendar className="w-6 h-6" />
+          <div className="p-12 text-center bg-zinc-900/40 rounded-3xl border border-zinc-800/80 space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-zinc-800/80 flex items-center justify-center mx-auto text-zinc-500">
+              <Calendar className="w-7 h-7" />
             </div>
-            <h3 className="text-base font-semibold text-zinc-300">Nenhum agendamento encontrado</h3>
-            <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-              Não há agendamentos para o filtro selecionado. Use o botão "Novo Agendamento" para adicionar ou mude o filtro.
-            </p>
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-zinc-200">Nenhum agendamento encontrado</h3>
+              <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                Não há agendamentos para os filtros aplicados. Clique no botão abaixo para adicionar um agendamento manual ou altere os filtros acima.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenManualForTime()}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs shadow-md shadow-amber-500/20 cursor-pointer"
+            >
+              <Plus className="w-4 h-4 stroke-[2.5]" />
+              <span>Adicionar Agendamento Agora</span>
+            </button>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-3">
+        ) : viewMode === 'list' ? (
+          
+          /* ================= VIEW MODE: DETAILED CARDS ================= */
+          <div className="grid grid-cols-1 gap-4">
             {filteredAppointments.map((apt) => {
               const isToday = apt.date === todayDate;
               const formattedDate = apt.date.split('-').reverse().join('/');
               const isMyClient = activeAdminBarber && apt.barberId === activeAdminBarber.id;
+              const barberObj = barbers.find((b) => b.id === apt.barberId);
 
               return (
                 <div
                   key={apt.id}
                   id={`appointment-card-${apt.id}`}
-                  className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center md:justify-between gap-4 ${
+                  className={`rounded-3xl border transition-all p-5 sm:p-6 space-y-4 ${
                     apt.status === 'completed'
-                      ? 'bg-zinc-900/40 border-zinc-800/60 opacity-80'
+                      ? 'bg-zinc-900/40 border-zinc-800/60 opacity-85'
                       : apt.status === 'cancelled'
-                      ? 'bg-red-950/10 border-red-900/20 opacity-60'
+                      ? 'bg-red-950/10 border-red-900/20 opacity-65'
                       : isToday
-                      ? 'bg-zinc-900 border-amber-500/40 shadow-md shadow-amber-500/5'
+                      ? 'bg-zinc-900/95 border-amber-500/50 shadow-lg shadow-amber-500/5 ring-1 ring-amber-500/20'
                       : 'bg-zinc-900/80 border-zinc-800'
                   }`}
                 >
-                  {/* Left: Time and client info */}
-                  <div className="flex items-start gap-3.5">
+                  
+                  {/* Top Bar: Time, Date, Status, Chair & Actions */}
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-zinc-800/80">
                     
-                    {/* Time & Date Pill */}
-                    <div className="flex-shrink-0 text-center py-2 px-3 rounded-xl bg-zinc-950 border border-zinc-800 min-w-[75px]">
-                      <span className="block font-mono text-base font-bold text-amber-400">
-                        {apt.time}
-                      </span>
-                      <span className="text-[10px] text-zinc-400 font-medium">
-                        {formattedDate}
+                    {/* Time badge and date */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800">
+                        <Clock className="w-4 h-4 text-amber-400" />
+                        <span className="font-mono text-base font-bold text-amber-400">
+                          {apt.time}h
+                        </span>
+                        <span className="text-zinc-600">|</span>
+                        <span className="text-xs font-semibold text-zinc-300">
+                          {formattedDate}
+                        </span>
+                      </div>
+
+                      {/* Today Badge */}
+                      {isToday && (
+                        <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-400 text-zinc-950">
+                          Hoje
+                        </span>
+                      )}
+
+                      {/* My chair badge */}
+                      {isMyClient && (
+                        <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                          Sua Cadeira
+                        </span>
+                      )}
+
+                      {/* Status badge */}
+                      <span
+                        className={`text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full border ${
+                          apt.status === 'confirmed'
+                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                            : apt.status === 'completed'
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                            : 'bg-red-500/10 text-red-400 border-red-500/30'
+                        }`}
+                      >
+                        {apt.status === 'confirmed'
+                          ? 'Confirmado'
+                          : apt.status === 'completed'
+                          ? 'Concluído'
+                          : 'Cancelado'}
                       </span>
                     </div>
 
-                    {/* Client & Service Details */}
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-bold text-zinc-100 text-sm flex items-center gap-1.5">
-                          <User className="w-3.5 h-3.5 text-zinc-400" />
+                    {/* Quick action buttons on top-right */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      
+                      {/* EDIT BUTTON */}
+                      <button
+                        id={`edit-apt-btn-${apt.id}`}
+                        type="button"
+                        onClick={() => handleOpenEdit(apt)}
+                        title="Editar cliente, telefone, serviço ou horário"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold transition-all cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        <span>Editar</span>
+                      </button>
+
+                      {/* WhatsApp with auto message */}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenWhatsAppReminder(apt)}
+                        title="Abrir WhatsApp com lembrete do serviço"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/50 hover:bg-emerald-950 text-emerald-400 border border-emerald-800/40 text-xs font-bold transition-all cursor-pointer"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>WhatsApp</span>
+                      </button>
+
+                      {/* Status toggle */}
+                      {apt.status === 'confirmed' && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateStatus(apt.id, 'completed')}
+                          title="Marcar como Concluído"
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shadow-sm"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Concluir</span>
+                        </button>
+                      )}
+
+                      {apt.status === 'confirmed' && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateStatus(apt.id, 'cancelled')}
+                          title="Cancelar Agendamento"
+                          className="p-1.5 rounded-xl bg-zinc-800 hover:bg-red-950 hover:text-red-300 text-zinc-400 text-xs font-medium transition-all cursor-pointer"
+                        >
+                          <XCircle className="w-4 h-4" />
+                        </button>
+                      )}
+
+                      {apt.status !== 'confirmed' && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateStatus(apt.id, 'confirmed')}
+                          title="Reativar Agendamento"
+                          className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-all cursor-pointer"
+                        >
+                          Reativar
+                        </button>
+                      )}
+
+                      {/* Delete */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Excluir permanentemente o agendamento de ${apt.clientName}?`)) {
+                            onDeleteAppointment(apt.id);
+                          }
+                        }}
+                        title="Excluir Agendamento"
+                        className="p-1.5 rounded-xl text-zinc-600 hover:text-red-400 hover:bg-zinc-800 transition-all cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                  </div>
+
+                  {/* Core 2-Column Info: Client Info & WHAT IS BOOKED */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                    
+                    {/* Left Column (5 cols): Client Identity & Contacts */}
+                    <div className="lg:col-span-5 space-y-3">
+                      <div>
+                        <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">
+                          Cliente
+                        </span>
+                        <h3 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+                          <User className="w-4 h-4 text-amber-400" />
                           {apt.clientName}
                         </h3>
+                      </div>
 
-                        {/* Phone with WhatsApp clickable */}
-                        <a
-                          href={`https://wa.me/${apt.clientPhone.replace(/\D/g, '')}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-emerald-400 hover:text-emerald-300 font-mono flex items-center gap-1 bg-emerald-950/30 px-2 py-0.5 rounded-md border border-emerald-800/30"
-                          title="Conversar no WhatsApp"
-                        >
-                          <Phone className="w-3 h-3" />
-                          {apt.clientPhone}
-                        </a>
+                      <div className="space-y-1.5 text-xs text-zinc-300">
+                        <div className="flex items-center gap-2">
+                          <Phone className="w-3.5 h-3.5 text-emerald-400" />
+                          <a
+                            href={`https://wa.me/${apt.clientPhone.replace(/\D/g, '')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-emerald-400 hover:underline font-semibold"
+                          >
+                            {apt.clientPhone}
+                          </a>
+                        </div>
 
                         {apt.clientEmail && (
-                          <span className="text-xs text-zinc-400 flex items-center gap-1">
-                            <Mail className="w-3 h-3 text-zinc-500" />
-                            {apt.clientEmail}
-                          </span>
-                        )}
-                        
-                        {/* Status Badge */}
-                        <span
-                          className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border ${
-                            apt.status === 'confirmed'
-                              ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                              : apt.status === 'completed'
-                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                              : 'bg-red-500/10 text-red-400 border-red-500/20'
-                          }`}
-                        >
-                          {apt.status === 'confirmed'
-                            ? 'Confirmado'
-                            : apt.status === 'completed'
-                            ? 'Concluído'
-                            : 'Cancelado'}
-                        </span>
-
-                        {isToday && (
-                          <span className="text-[10px] bg-amber-400 text-zinc-950 font-bold px-1.5 py-0.2 rounded">
-                            Hoje
-                          </span>
-                        )}
-
-                        {isMyClient && (
-                          <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold px-1.5 py-0.2 rounded">
-                            Minha Cadeira
-                          </span>
+                          <div className="flex items-center gap-2 text-zinc-400">
+                            <Mail className="w-3.5 h-3.5 text-sky-400" />
+                            <span>{apt.clientEmail}</span>
+                          </div>
                         )}
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
-                        <span className="text-zinc-200 font-medium">
-                          ✂️ {apt.serviceName}
+                      {/* Responsible Barber */}
+                      <div className="pt-2 border-t border-zinc-800/80 flex items-center gap-2.5">
+                        <img
+                          src={barberObj?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150'}
+                          alt={apt.barberName}
+                          className="w-8 h-8 rounded-lg object-cover border border-zinc-700"
+                        />
+                        <div className="text-xs">
+                          <span className="text-zinc-500 block text-[10px] uppercase font-semibold">Barbeiro Designado:</span>
+                          <span className="font-bold text-zinc-200">{apt.barberName}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column (7 cols): EXPLICIT "O QUE O CLIENTE AGENDOU" BOX */}
+                    <div className="lg:col-span-7 bg-zinc-950/80 border border-amber-500/30 rounded-2xl p-4 sm:p-5 space-y-3 shadow-inner">
+                      
+                      {/* Box Header */}
+                      <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80">
+                        <span className="text-[11px] uppercase font-bold text-amber-400 tracking-wider flex items-center gap-1.5">
+                          <PackageCheck className="w-4 h-4 text-amber-400" />
+                          O Que o Cliente Agendou:
                         </span>
-                        <span className="text-zinc-300">
-                          💈 {apt.barberName}
-                        </span>
-                        <span className="font-mono text-amber-400 font-bold">
-                          {formatBRL(apt.servicePrice)}
-                        </span>
-                        <span className="text-zinc-500 flex items-center gap-1">
-                          <Clock className="w-3 h-3" /> {apt.serviceDuration} min
-                        </span>
+                        <div className="text-right">
+                          <span className="text-sm sm:text-base font-bold font-mono text-amber-300">
+                            {formatBRL(apt.servicePrice)}
+                          </span>
+                        </div>
                       </div>
 
-                      {apt.notes && (
-                        <p className="text-[11px] text-zinc-400 italic bg-zinc-950/40 px-2.5 py-1 rounded-lg border border-zinc-800/50 w-fit">
-                          Obs: {apt.notes}
+                      {/* Service Title and details */}
+                      <div className="space-y-1">
+                        <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                          <h4 className="text-base font-bold text-zinc-100 flex items-center gap-1.5">
+                            <Scissors className="w-4 h-4 text-amber-400" />
+                            {apt.serviceName}
+                          </h4>
+                          <span className="text-xs text-zinc-400 font-mono flex items-center gap-1 bg-zinc-900 px-2 py-0.5 rounded-md border border-zinc-800">
+                            <Clock className="w-3 h-3 text-amber-400" />
+                            {apt.serviceDuration} minutos de atendimento
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Notes / Special client preferences */}
+                      {apt.notes ? (
+                        <div className="p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-amber-200/90 space-y-1">
+                          <span className="font-bold flex items-center gap-1 text-[11px] uppercase tracking-wider text-amber-400">
+                            <Info className="w-3 h-3" /> Preferências / Observações do Cliente:
+                          </span>
+                          <p className="italic">"{apt.notes}"</p>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-zinc-500 italic">
+                          Sem observações adicionais informadas pelo cliente.
                         </p>
                       )}
+
                     </div>
+
                   </div>
 
-                  {/* Right: Actions */}
-                  <div className="flex items-center gap-2 self-end md:self-center flex-wrap">
-                    
-                    {/* EDIT BUTTON (Full editing of client, phone, date, time, service, barber) */}
-                    <button
-                      id={`edit-apt-btn-${apt.id}`}
-                      type="button"
-                      onClick={() => handleOpenEdit(apt)}
-                      title="Editar dados, nome, telefone ou horário deste agendamento"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold transition-all cursor-pointer"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                      <span>Editar</span>
-                    </button>
-
-                    {/* WhatsApp reminder button */}
-                    <button
-                      type="button"
-                      onClick={() => handleOpenWhatsAppReminder(apt)}
-                      title="Enviar Lembrete / Confirmação por WhatsApp"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/40 hover:bg-emerald-950 text-emerald-400 border border-emerald-800/40 text-xs font-semibold transition-all cursor-pointer"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">WhatsApp</span>
-                    </button>
-
-                    {/* Status toggles */}
-                    {apt.status === 'confirmed' && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStatus(apt.id, 'completed')}
-                        title="Marcar como Concluído"
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shadow-sm"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Concluir</span>
-                      </button>
-                    )}
-
-                    {apt.status === 'confirmed' && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStatus(apt.id, 'cancelled')}
-                        title="Cancelar Agendamento"
-                        className="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-red-950 hover:text-red-300 text-zinc-400 text-xs font-medium transition-all cursor-pointer"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-
-                    {apt.status !== 'confirmed' && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStatus(apt.id, 'confirmed')}
-                        title="Reativar Agendamento"
-                        className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-all cursor-pointer"
-                      >
-                        Reativar
-                      </button>
-                    )}
-
-                    {/* Delete */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm(`Excluir permanentemente o agendamento de ${apt.clientName}?`)) {
-                          onDeleteAppointment(apt.id);
-                        }
-                      }}
-                      title="Excluir Agendamento"
-                      className="p-1.5 rounded-xl text-zinc-600 hover:text-red-400 hover:bg-zinc-800 transition-all cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
                 </div>
               );
             })}
           </div>
+
+        ) : (
+
+          /* ================= VIEW MODE: TIMELINE / DAILY HOUR-BY-HOUR AGENDA ================= */
+          <div className="bg-zinc-900/90 border border-zinc-800 rounded-3xl p-5 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div>
+                <h3 className="text-sm font-bold text-zinc-200 flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4 text-amber-400" />
+                  Grade de Horários do Dia ({dateFilter === 'today' ? `Hoje - ${todayDate.split('-').reverse().join('/')}` : 'Data Selecionada'})
+                </h3>
+                <p className="text-xs text-zinc-400">
+                  Veja quem está em cada horário e qual serviço será executado.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleOpenManualForTime()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs transition-all cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Encaixar Cliente</span>
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              {TIME_SLOTS.map((slot) => {
+                // Find appointments in this time slot
+                const aptsInSlot = filteredAppointments.filter((a) => a.time === slot);
+
+                if (aptsInSlot.length > 0) {
+                  return (
+                    <div
+                      key={slot}
+                      className="p-3.5 sm:p-4 rounded-2xl bg-zinc-950 border border-amber-500/40 flex flex-col md:flex-row md:items-center md:justify-between gap-3"
+                    >
+                      {/* Left: Time and client */}
+                      <div className="flex items-start gap-3">
+                        <span className="font-mono text-base font-bold text-amber-400 bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-xl min-w-[70px] text-center">
+                          {slot}h
+                        </span>
+
+                        <div className="space-y-1">
+                          {aptsInSlot.map((apt) => (
+                            <div key={apt.id} className="space-y-0.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-zinc-100 text-sm">
+                                  {apt.clientName}
+                                </span>
+                                <span className="text-xs text-zinc-400">({apt.clientPhone})</span>
+                                <span className="text-[10px] px-2 py-0.2 rounded-full bg-amber-500/20 text-amber-300 font-bold">
+                                  💈 {apt.barberName}
+                                </span>
+                              </div>
+
+                              <div className="text-xs text-zinc-300 flex items-center gap-2 flex-wrap">
+                                <span className="text-amber-400 font-bold">
+                                  ✂️ {apt.serviceName}
+                                </span>
+                                <span>•</span>
+                                <span className="font-mono font-bold text-emerald-400">
+                                  {formatBRL(apt.servicePrice)}
+                                </span>
+                                <span>•</span>
+                                <span className="text-zinc-400">{apt.serviceDuration} min</span>
+                                {apt.notes && (
+                                  <span className="text-zinc-400 italic">({apt.notes})</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Right: Actions */}
+                      <div className="flex items-center gap-2 self-end md:self-center">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEdit(aptsInSlot[0])}
+                          className="px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold cursor-pointer"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenWhatsAppReminder(aptsInSlot[0])}
+                          className="px-3 py-1.5 rounded-xl bg-emerald-950 hover:bg-emerald-900 text-emerald-400 border border-emerald-800/40 text-xs font-bold cursor-pointer"
+                        >
+                          WhatsApp
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Empty slot
+                return (
+                  <div
+                    key={slot}
+                    className="p-3 rounded-2xl bg-zinc-950/40 border border-zinc-900 flex items-center justify-between gap-3 text-xs text-zinc-500 hover:border-zinc-800 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono font-semibold text-zinc-400 bg-zinc-900/60 px-2.5 py-1 rounded-xl min-w-[70px] text-center">
+                        {slot}h
+                      </span>
+                      <span>Horário Disponível</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenManualForTime(slot)}
+                      className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 font-semibold cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Agendar neste horário
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
+
       </div>
 
       {/* ================= EDIT APPOINTMENT MODAL ================= */}
@@ -808,7 +1195,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     Editar Dados do Agendamento
                   </h2>
                   <p className="text-xs text-zinc-400">
-                    Altere nome, telefone, data, horário ou profissional responsável.
+                    Altere nome, telefone, serviço solicitado, data ou horário.
                   </p>
                 </div>
               </div>
@@ -816,7 +1203,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setEditingAppointment(null)}
-                className="p-1.5 rounded-xl text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                className="p-1.5 rounded-xl text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -875,7 +1262,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-zinc-300 mb-1 flex items-center gap-1">
-                    <Scissors className="w-3.5 h-3.5 text-amber-400" /> Serviço
+                    <Scissors className="w-3.5 h-3.5 text-amber-400" /> Serviço Solicitado
                   </label>
                   <select
                     id="edit-service-select"
@@ -948,7 +1335,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {/* Status */}
               <div>
                 <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                  Status do Agendamento
+                  Status do Atendimento
                 </label>
                 <div className="grid grid-cols-3 gap-2">
                   {[
@@ -960,7 +1347,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       key={st.id}
                       type="button"
                       onClick={() => setEditStatus(st.id as any)}
-                      className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                         editStatus === st.id
                           ? `bg-zinc-800 ${st.color} ring-1 ring-amber-500/50`
                           : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300'
@@ -980,7 +1367,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <textarea
                   id="edit-notes-input"
                   rows={2}
-                  placeholder="Ex: Cliente tem preferência por fade na tesoura, avisou que pode chegar 5 min atrasado..."
+                  placeholder="Ex: Cliente tem preferência por corte na tesoura, acabamento navalhado..."
                   value={editNotes}
                   onChange={(e) => setEditNotes(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 focus:outline-none focus:border-amber-500"
@@ -992,7 +1379,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <button
                   type="button"
                   onClick={() => setEditingAppointment(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 transition-colors"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 transition-colors cursor-pointer"
                 >
                   Cancelar
                 </button>
@@ -1021,19 +1408,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* ================= MANUAL BOOKING MODAL ================= */}
+      {/* ================= MANUAL BOOKING MODAL (BALCÃO / ENCAIXE) ================= */}
       {showManualModal && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-zinc-900 border border-zinc-800 w-full max-w-lg rounded-3xl p-6 space-y-4 shadow-2xl my-auto">
             <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
               <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
                 <Plus className="w-5 h-5 text-amber-400" />
-                Novo Agendamento Manual (Presencial / Balcão)
+                Novo Agendamento Manual (Balcão / Presencial)
               </h2>
               <button
                 type="button"
                 onClick={() => setShowManualModal(false)}
-                className="p-1.5 rounded-xl text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                className="p-1.5 rounded-xl text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1138,7 +1525,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1">Observações</label>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">Observações do Cliente</label>
                 <input
                   type="text"
                   placeholder="Ex: Agendado presencialmente no balcão"

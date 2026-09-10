@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Navbar } from './components/Navbar.tsx';
 import { BookingWizard } from './components/BookingWizard.tsx';
 import { AdminDashboard } from './components/AdminDashboard.tsx';
+import { AdmLoginScreen } from './components/AdmLoginScreen.tsx';
 import { SupabaseModal } from './components/SupabaseModal.tsx';
 import { Appointment, Barber, Service, SupabaseConfig } from './types.ts';
 import { 
@@ -15,10 +16,19 @@ import {
   deleteAppointmentInStorage 
 } from './lib/supabase.ts';
 import { INITIAL_APPOINTMENTS, INITIAL_BARBERS, INITIAL_SERVICES, getTodayFormatted } from './data/initialData.ts';
-import { Scissors, MapPin, Phone, Clock, Database, Check } from 'lucide-react';
+import { Scissors, MapPin, Phone, Database, Check } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'booking' | 'admin'>('booking');
+  // ADM Authentication State (defaults to true for instant preview, with lock option)
+  const [isAdmAuthenticated, setIsAdmAuthenticated] = useState<boolean>(() => {
+    const saved = localStorage.getItem('navalha_adm_auth');
+    if (saved === 'false') return false;
+    return true; // Default true so the barber is immediately in the ADM Dashboard
+  });
+
+  // Client view simulation toggle (only if the barber wants to see/test the client side)
+  const [showClientView, setShowClientView] = useState<boolean>(false);
+
   const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(getActiveSupabaseConfig);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState<boolean>(false);
 
@@ -110,6 +120,20 @@ export default function App() {
     return true;
   };
 
+  // Logout / Lock ADM
+  const handleLogoutAdm = () => {
+    localStorage.setItem('navalha_adm_auth', 'false');
+    setIsAdmAuthenticated(false);
+    setShowClientView(false);
+    showToast('Painel ADM bloqueado com sucesso.');
+  };
+
+  // Login ADM success
+  const handleLoginAdmSuccess = (barberId: string) => {
+    setIsAdmAuthenticated(true);
+    showToast('Acesso de Barbeiro ADM autorizado!');
+  };
+
   // Callback when Supabase credentials config changes
   const handleConfigUpdated = () => {
     const fresh = getActiveSupabaseConfig();
@@ -141,11 +165,13 @@ export default function App() {
 
       {/* Top Navbar */}
       <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
         supabaseConfig={supabaseConfig}
         onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
         todayCount={todayCount}
+        isAdmAuthenticated={isAdmAuthenticated}
+        onLogoutAdm={handleLogoutAdm}
+        showClientView={showClientView}
+        setShowClientView={setShowClientView}
       />
 
       {/* Main View Area */}
@@ -155,16 +181,45 @@ export default function App() {
             <div className="w-8 h-8 border-3 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
             <p className="text-xs text-zinc-400 font-medium">Carregando serviços e agendamentos...</p>
           </div>
-        ) : activeTab === 'booking' ? (
-          <BookingWizard
-            services={services}
+        ) : !isAdmAuthenticated ? (
+          /* ================= ADM LOGIN / PIN SCREEN ================= */
+          <AdmLoginScreen
             barbers={barbers}
-            existingAppointments={appointments}
-            onBookAppointment={handleBookAppointment}
-            onGoToAdmin={() => setActiveTab('admin')}
-            isSupabaseConnected={supabaseConfig.isConfigured}
+            onLoginSuccess={handleLoginAdmSuccess}
           />
+        ) : showClientView ? (
+          /* ================= OPTIONAL: CLIENT BOOKING VIEW SIMULATION ================= */
+          <div className="space-y-4">
+            <div className="max-w-7xl mx-auto px-4 pt-4">
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3 flex items-center justify-between gap-3 text-xs text-amber-200">
+                <span>
+                  👀 Você está visualizando a tela que o cliente final enxerga para agendar horários.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowClientView(false)}
+                  className="px-3 py-1 rounded-xl bg-amber-500 text-zinc-950 font-bold hover:bg-amber-400 transition-colors cursor-pointer"
+                >
+                  Voltar ao Painel ADM
+                </button>
+              </div>
+            </div>
+
+            <BookingWizard
+              services={services}
+              barbers={barbers}
+              existingAppointments={appointments}
+              onBookAppointment={async (aptData) => {
+                const res = await handleBookAppointment(aptData);
+                setShowClientView(false); // Return to admin after booking
+                return res;
+              }}
+              onGoToAdmin={() => setShowClientView(false)}
+              isSupabaseConnected={supabaseConfig.isConfigured}
+            />
+          </div>
         ) : (
+          /* ================= DEFAULT PRIMARY VIEW: BARBER ADMIN DASHBOARD ================= */
           <AdminDashboard
             appointments={appointments}
             services={services}
@@ -175,6 +230,8 @@ export default function App() {
             onAddManualAppointment={handleBookAppointment}
             onRefresh={loadData}
             isSupabaseConnected={supabaseConfig.isConfigured}
+            onLogoutAdm={handleLogoutAdm}
+            onOpenClientView={() => setShowClientView(true)}
           />
         )}
       </main>
@@ -198,7 +255,7 @@ export default function App() {
               Navalha & Arte Barbearia
             </span>
             <span className="text-zinc-600">|</span>
-            <span>Tradição, Estilo e Precisão</span>
+            <span>Painel do Barbeiro ADM</span>
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 text-zinc-400">
