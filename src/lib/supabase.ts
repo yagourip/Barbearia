@@ -330,6 +330,59 @@ export const updateAppointmentStatusInStorage = async (
   return true;
 };
 
+export const updateAppointmentInStorage = async (
+  id: string,
+  updatedData: Partial<Appointment>
+): Promise<Appointment | null> => {
+  const client = getSupabaseClient();
+  if (client) {
+    try {
+      const payload: Record<string, any> = {};
+      if (updatedData.clientName !== undefined) payload.client_name = updatedData.clientName;
+      if (updatedData.clientPhone !== undefined) payload.client_phone = updatedData.clientPhone;
+      if (updatedData.clientEmail !== undefined) payload.client_email = updatedData.clientEmail || null;
+      if (updatedData.serviceId !== undefined) payload.service_id = updatedData.serviceId;
+      if (updatedData.serviceName !== undefined) payload.service_name = updatedData.serviceName;
+      if (updatedData.servicePrice !== undefined) payload.service_price = updatedData.servicePrice;
+      if (updatedData.serviceDuration !== undefined) payload.service_duration = updatedData.serviceDuration;
+      if (updatedData.barberId !== undefined) payload.barber_id = updatedData.barberId;
+      if (updatedData.barberName !== undefined) payload.barber_name = updatedData.barberName;
+      if (updatedData.date !== undefined) payload.date = updatedData.date;
+      if (updatedData.time !== undefined) payload.time = updatedData.time;
+      if (updatedData.status !== undefined) payload.status = updatedData.status;
+      if (updatedData.notes !== undefined) payload.notes = updatedData.notes || null;
+
+      const { error } = await client
+        .from('appointments')
+        .update(payload)
+        .eq('id', id);
+
+      if (error) {
+        console.error('Supabase update appointment error:', error);
+      }
+    } catch (err) {
+      console.error('Failed to update appointment in Supabase:', err);
+    }
+  }
+
+  // Update local cache
+  const list = getLocalAppointments();
+  let updatedAppointment: Appointment | null = null;
+  const updatedList = list.map((apt) => {
+    if (apt.id === id) {
+      updatedAppointment = {
+        ...apt,
+        ...updatedData,
+      };
+      return updatedAppointment;
+    }
+    return apt;
+  });
+
+  saveLocalAppointments(updatedList);
+  return updatedAppointment;
+};
+
 export const deleteAppointmentInStorage = async (id: string): Promise<boolean> => {
   const client = getSupabaseClient();
   if (client) {

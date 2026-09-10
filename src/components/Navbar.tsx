@@ -70,8 +70,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                     : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
                 }`}
               >
-                <LayoutDashboard className="w-4 h-4" />
-                <span>Painel da Barbearia</span>
+                <ShieldCheck className="w-4 h-4" />
+                <span>Barbeiro ADM</span>
                 {todayCount > 0 && (
                   <span className={`text-[11px] px-1.5 py-0.2 rounded-full font-bold ${
                     activeTab === 'admin'

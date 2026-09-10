@@ -11,6 +11,7 @@ import {
   fetchAppointmentsFromStorage, 
   createAppointmentInStorage, 
   updateAppointmentStatusInStorage, 
+  updateAppointmentInStorage,
   deleteAppointmentInStorage 
 } from './lib/supabase.ts';
 import { INITIAL_APPOINTMENTS, INITIAL_BARBERS, INITIAL_SERVICES, getTodayFormatted } from './data/initialData.ts';
@@ -88,6 +89,19 @@ export default function App() {
     return true;
   };
 
+  // Handler for full appointment edit
+  const handleEditAppointment = async (
+    id: string,
+    updatedData: Partial<Appointment>
+  ): Promise<boolean> => {
+    await updateAppointmentInStorage(id, updatedData);
+    setAppointments((prev) =>
+      prev.map((apt) => (apt.id === id ? { ...apt, ...updatedData } : apt))
+    );
+    showToast(`Agendamento de ${updatedData.clientName || 'cliente'} atualizado com sucesso!`);
+    return true;
+  };
+
   // Handler for delete
   const handleDeleteAppointment = async (id: string): Promise<boolean> => {
     await deleteAppointmentInStorage(id);
@@ -156,6 +170,7 @@ export default function App() {
             services={services}
             barbers={barbers}
             onUpdateStatus={handleUpdateStatus}
+            onEditAppointment={handleEditAppointment}
             onDeleteAppointment={handleDeleteAppointment}
             onAddManualAppointment={handleBookAppointment}
             onRefresh={loadData}
